@@ -1,0 +1,83 @@
+import pandas as pd
+from rapidfuzz import fuzz
+from datetime import datetime
+import os
+import glob
+
+# --- List matching files ---
+files = sorted(glob.glob("Re-entry Students (*).xlsx"))
+
+if not files:
+    print("❌ No files found matching 'Re-entry Students (*).xlsx' in this folder.")
+    exit()
+
+# --- Display options ---
+print("\nAvailable Re-entry Student files:")
+for i, f in enumerate(files):
+    print(f"  {i + 1}. {f}")
+
+# --- Ask user to choose one ---
+choice = input("\nWhich file would you like to use? (Enter the number): ").strip()
+
+# Validate numeric input
+while not choice.isdigit() or not (1 <= int(choice) <= len(files)):
+    choice = input(f"❌ Invalid choice. Please enter a number 1–{len(files)}: ").strip()
+
+file_name = files[int(choice) - 1]
+print(f"\n✅ Using file: {file_name}")
+
+# --- Load Files ---
+merged = pd.read_excel(file_name)
+inmates = pd.read_excel('inmateDB.xlsx', sheet_name='Record Type 1')
+
+# --- Normalize inmate columns ---
+inmates['FIRST NAME'] = inmates['FIRST NAME'].fillna('').str.upper().str.strip()
+inmates['COMMITTED LAST NAME'] = inmates['COMMITTED LAST NAME'].fillna('').str.upper().str.strip()
+inmates['GENDER'] = inmates['GENDER'].fillna('').str.upper().str.strip()
+inmates['DATE OF BIRTH'] = pd.to_datetime(inmates['DATE OF BIRTH'], errors='coerce')
+
+# --- Normalize student columns ---
+merged['First Name'] = merged['First Name'].fillna('').str.upper().str.strip()
+merged['Last Name'] = merged['Last Name'].fillna('').str.upper().str.strip()
+merged['Gender'] = merged['Gender'].fillna('').str.upper().str.strip()
+merged['Birth Date'] = pd.to_datetime(merged['Birth Date'], errors='coerce')
+
+# --- Define fuzzy similarity function ---
+def similar(a, b, threshold=80):
+    return fuzz.ratio(a, b) >= threshold
+
+# --- Matching function ---
+def get_matches(row):
+    first = row['First Name']
+    last = row['Last Name']
+    gender = row['Gender'] if row['Gender'] in ['M', 'F'] else None
+    birth_date = row['Birth Date']
+
+    if pd.notnull(birth_date):
+        year_low = birth_date.year - 1
+        year_high = birth_date.year + 1
+        inmate_subset = inmates[inmates['DATE OF BIRTH'].dt.year.between(year_low, year_high)]
+    else:
+        inmate_subset = inmates.copy()
+
+    if gender:
+        inmate_subset = inmate_subset[inmate_subset['GENDER'].isin(['MALE' if gender == 'M' else 'FEMALE'])]
+
+    matches = inmate_subset[
+        inmate_subset.apply(
+            lambda r: similar(r['FIRST NAME'], first) and similar(r['COMMITTED LAST NAME'], last),
+            axis=1
+        )
+    ]
+
+    return ', '.join(matches['ID NUMBER'].astype(str)) if not matches.empty else ''
+
+# --- Run matching ---
+merged['MatchedID'] = merged.apply(get_matches, axis=1)
+
+# --- Save result ---
+today_str = datetime.now().strftime('%Y-%m-%d')
+output_file = f"matched_fuzzy_ReentryStudents_{today_str}.xlsx"
+merged.to_excel(output_file, index=False)
+
+print(f"\n✅ Matching complete. Saved as '{output_file}'")
